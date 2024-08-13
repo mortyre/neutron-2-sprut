@@ -37,6 +37,7 @@ Software Defined Network — концепция выведения сетевы�
 
 
 <img src="./images/fig-1-2x.jpg" width="600">
+> test anno
 Some Text. [^footnote]
 
 [^footnote]: This is a footnote.

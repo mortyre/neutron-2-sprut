@@ -115,13 +115,13 @@ echo "Executing STEP 4: Collecting info about IPsec policies"
 declare -A neutron_ipsec_policy_ID_to_json_details
 
 # List all IPsec policies
-ike_policy_list_cmd="openstack vpn ike policy list -f json"
+ike_policy_list_cmd="openstack vpn ipsec policy list -f json"
 neutron_ike_policy_list=$($ike_policy_list_cmd)
 
 # Run show for each IPsec policy from list
 policy_ids=$(echo "$neutron_ike_policy_list" | jq -r '.[].ID')
 for policy_id in $policy_ids; do
-    ike_policy_show_cmd="openstack vpn ike policy show $policy_id -f json"
+    ike_policy_show_cmd="openstack vpn ipsec policy show $policy_id -f json"
     echo "Running command: $ike_policy_show_cmd"
 
     ike_policy_json_details=$($ike_policy_show_cmd)
@@ -376,8 +376,366 @@ echo "**************************************************************************
 
 echo "{====================STAGE 1: COMPLETE====================}"
 echo ""
-echo "{====================STAGE 2: CREATING NEW TUNNELS ====================}"
 
-end_time=$(date +%s)
-elapsed_time=$(($end_time - $start_time))
-echo "Elapsed time: $elapsed_time seconds"
+# Stage 2: Collecting Existing Sprut Objects
+echo "{====================STAGE 2: Collecting Existing Sprut Objects====================}"
+
+sprut_api_base="https://infra.mail.ru:9696/v2.0"
+
+# Function to collect Sprut objects and store them in dictionaries
+collect_sprut_objects() {
+    echo "Collecting IKE policies from Sprut..."
+    sprut_ike_policies=$(curl -s -X GET "${sprut_api_base}/vpn/ikepolicies" \
+        -H "Content-Type: application/json" \
+        -H "X-Auth-Token: $token" \
+        -H "X-SDN:SPRUT")
+    echo "IKE policies collected:"
+    echo "$sprut_ike_policies"
+    echo ""
+
+    echo "Collecting IPsec policies from Sprut..."
+    sprut_ipsec_policies=$(curl -s -X GET "${sprut_api_base}/vpn/ipsecpolicies" \
+        -H "Content-Type: application/json" \
+        -H "X-Auth-Token: $token" \
+        -H "X-SDN:SPRUT")
+    echo "IPsec policies collected:"
+    echo "$sprut_ipsec_policies"
+    echo ""
+
+    echo "Collecting Endpoint Groups from Sprut..."
+    sprut_endpoint_groups=$(curl -s -X GET "${sprut_api_base}/vpn/endpoint-groups" \
+        -H "Content-Type: application/json" \
+        -H "X-Auth-Token: $token" \
+        -H "X-SDN:SPRUT")
+    echo "Endpoint Groups collected:"
+    echo "$sprut_endpoint_groups"
+    echo ""
+
+    echo "Collecting VPN services from Sprut..."
+    sprut_vpn_services=$(curl -s -X GET "${sprut_api_base}/vpn/vpnservices" \
+        -H "Content-Type: application/json" \
+        -H "X-Auth-Token: $token" \
+        -H "X-SDN:SPRUT")
+    echo "VPN services collected:"
+    echo "$sprut_vpn_services"
+    echo ""
+}
+
+# Execute the function
+collect_sprut_objects
+
+echo "STAGE 2 complete: Sprut objects collected"
+echo "**********************************************************************************"
+
+# Stage 3: Comparing and Creating Missing Objects in Sprut
+echo "{====================STAGE 3: Comparing and Creating Missing Objects in Sprut====================}"
+
+print_map_as_table() {
+    local -n map=$1
+    local title=$2
+    local column1=$3
+    local column2=$4
+
+    echo "=================================================================================="
+    echo "$title"
+    echo "=================================================================================="
+    printf "| %-36s | %-36s |\n" "$column1" "$column2"
+    echo " ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅ ̅"
+    for key in "${!map[@]}"; do
+        echo "$key"          "${map[$key]}"
+    done
+    echo "=================================================================================="
+    echo ""
+}
+
+# Declare maps to store the correspondence between Neutron and Sprut IDs
+declare -A neutron_to_sprut_ike_policy
+declare -A neutron_to_sprut_ipsec_policy
+declare -A neutron_to_sprut_endpoint_group
+declare -A neutron_to_sprut_vpn_service
+
+# Function to compare and create IKE policies in Sprut
+compare_and_create_ike_policies() {
+    for neutron_ike_policy_id in "${!neutron_ike_policy_ID_to_json_details[@]}"; do
+        neutron_ike_policy=$(echo "${neutron_ike_policy_ID_to_json_details[$neutron_ike_policy_id]}" | jq -r)
+        neutron_ike_policy_name=$(echo "$neutron_ike_policy" | jq -r '.Name')
+
+        # Check if the IKE policy already exists in Sprut
+
+        sprut_ike_policy_id=$(echo "$sprut_ike_policies" | jq -r --arg name "$neutron_ike_policy_name" '.ikepolicies[] | select(.name == $name) | .id')
+
+        if [ -z "$sprut_ike_policy_id" ]; then
+            echo "Creating IKE policy '$neutron_ike_policy_name' in Sprut"
+
+            request_body=$(echo "$neutron_ike_policy" | jq '{
+                ikepolicy: {
+                    name: .Name,
+                    phase1_negotiation_mode: .["Phase1 Negotiation Mode"],
+                    auth_algorithm: .["Authentication Algorithm"],
+                    encryption_algorithm: .["Encryption Algorithm"],
+                    pfs: .["Perfect Forward Secrecy (PFS)"],
+                    lifetime: .Lifetime,
+                    ike_version: .["IKE Version"]
+                }
+            }')
+
+            curl_response=$(curl -s -X POST "${sprut_api_base}/vpn/ikepolicies" \
+                -H "Content-Type: application/json" \
+                -H "X-Auth-Token: $token" \
+                -H "X-SDN:SPRUT" \
+                -d "$request_body")
+
+            sprut_ike_policy_id=$(echo "$curl_response" | jq -r '.ikepolicy.id')
+            neutron_to_sprut_ike_policy["$neutron_ike_policy_id"]="$sprut_ike_policy_id"
+        else
+            echo "IKE policy '$neutron_ike_policy_name' already exists in Sprut"
+            neutron_to_sprut_ike_policy["$neutron_ike_policy_id"]="$sprut_ike_policy_id"
+        fi
+    done
+}
+
+# Function to compare and create IPsec policies in Sprut
+compare_and_create_ipsec_policies() {
+    for neutron_ipsec_policy_id in "${!neutron_ipsec_policy_ID_to_json_details[@]}"; do
+        neutron_ipsec_policy=$(echo "${neutron_ipsec_policy_ID_to_json_details[$neutron_ipsec_policy_id]}" | jq -r)
+        neutron_ipsec_policy_name=$(echo "$neutron_ipsec_policy" | jq -r '.Name')
+
+        # Check if the IPsec policy already exists in Sprut
+        sprut_ipsec_policy_id=$(echo "$sprut_ipsec_policies" | jq -r --arg name "$neutron_ipsec_policy_name" '.ipsecpolicies[] | select(.name == $name) | .id')
+
+        if [ -z "$sprut_ipsec_policy_id" ]; then
+            echo "Creating IPsec policy '$neutron_ipsec_policy_name' in Sprut"
+
+            request_body=$(echo "$neutron_ipsec_policy" | jq '{
+                ipsecpolicy: {
+                    name: .Name,
+                    transform_protocol: .["Transform Protocol"],
+                    auth_algorithm: .["Authentication Algorithm"],
+                    encryption_algorithm: .["Encryption Algorithm"],
+                    encapsulation_mode: .["Encapsulation Mode"],
+                    pfs: .["Perfect Forward Secrecy (PFS)"],
+                    lifetime: .Lifetime
+                }
+            }')
+
+            curl_response=$(curl -s -X POST "${sprut_api_base}/vpn/ipsecpolicies" \
+                -H "Content-Type: application/json" \
+                -H "X-Auth-Token: $token" \
+                -H "X-SDN:SPRUT" \
+                -d "$request_body")
+
+            sprut_ipsec_policy_id=$(echo "$curl_response" | jq -r '.ipsecpolicy.id')
+            neutron_to_sprut_ipsec_policy["$neutron_ipsec_policy_id"]="$sprut_ipsec_policy_id"
+        else
+            echo "IPsec policy '$neutron_ipsec_policy_name' already exists in Sprut"
+            neutron_to_sprut_ipsec_policy["$neutron_ipsec_policy_id"]="$sprut_ipsec_policy_id"
+        fi
+    done
+}
+
+compare_and_create_endpoint_groups() {
+    for neutron_endpoint_group_id in "${!neutron_endpoint_group_ID_to_json_details[@]}"; do
+        neutron_endpoint_group=$(echo "${neutron_endpoint_group_ID_to_json_details[$neutron_endpoint_group_id]}" | jq -r)
+        neutron_endpoint_group_name=$(echo "$neutron_endpoint_group" | jq -r '.Name')
+        neutron_endpoints=$(echo "$neutron_endpoint_group" | jq -r '.Endpoints[]')
+
+        # Check if the endpoint is a UUID and replace it with the corresponding CIDR from the map
+        converted_endpoints=()
+        for endpoint in $neutron_endpoints; do
+            if [[ "$endpoint" =~ ^[0-9a-fA-F-]{36}$ ]]; then  # Check if it's a UUID
+                echo "Converting subnet UUID $endpoint in $neutron_endpoint_group_name endpoints"
+                if [ -n "${subnet_id_to_subnet_address[$endpoint]}" ]; then
+                    echo "Converted to ${subnet_id_to_subnet_address[$endpoint]}"
+                    converted_endpoints+=("${subnet_id_to_subnet_address[$endpoint]}")
+                else
+                    echo "Warning: Subnet ID $endpoint not found in subnet_id_to_subnet_address map."
+                fi
+            else
+                converted_endpoints+=("$endpoint")
+            fi
+        done
+
+        echo "Total converted UUIDs in endpoints: ${converted_endpoints[*]}"
+
+        # Search for a matching Sprut endpoint group based on the endpoints
+        matching_sprut_group=$(echo "$sprut_endpoint_groups" | jq -r --argjson endpoints "$(printf '%s\n' "${converted_endpoints[@]}" | jq -R . | jq -s .)" '
+            .endpoint_groups[] | select(.endpoints == $endpoints)')
+
+        sprut_endpoint_group_id=$(echo "$matching_sprut_group" | jq -r '.id')
+
+        if [ -n "$sprut_endpoint_group_id" ]; then
+            sprut_endpoints=$(echo "$matching_sprut_group" | jq -r '.endpoints[]')
+            echo "Comparing Neutron endpoint group '$neutron_endpoint_group_name' with endpoints: ${converted_endpoints[*]}"
+            echo "  -> Found corresponding Sprut endpoint group with endpoints: $sprut_endpoints"
+        else
+            echo "Comparing Neutron endpoint group '$neutron_endpoint_group_name' with endpoints: ${converted_endpoints[*]}"
+            echo "  -> No corresponding Sprut endpoint group found for these endpoints"
+        fi
+
+        if [ -z "$sprut_endpoint_group_id" ]; then
+            echo "Creating Endpoint Group '$neutron_endpoint_group_name' in Sprut"
+
+            # Update the request body to use the converted endpoints
+            request_body=$(jq -n --arg name "$neutron_endpoint_group_name" --argjson endpoints "$(printf '%s\n' "${converted_endpoints[@]}" | jq -R . | jq -s .)" '{
+                endpoint_group: {
+                    name: $name,
+                    endpoints: $endpoints,
+                    type: "cidr"
+                }
+            }')
+
+            # Log the request body
+            echo "Request body: $request_body"
+
+            curl_response=$(curl -s -X POST "${sprut_api_base}/vpn/endpoint-groups" \
+                -H "Content-Type: application/json" \
+                -H "X-Auth-Token: $token" \
+                -H "X-SDN:SPRUT" \
+                -d "$request_body")
+
+            sprut_endpoint_group_id=$(echo "$curl_response" | jq -r '.endpoint_group.id')
+            echo "Created Sprut Endpoint group: $sprut_endpoint_group_id"
+            neutron_to_sprut_endpoint_group["$neutron_endpoint_group_id"]="$sprut_endpoint_group_id"
+        else
+            echo "Endpoint Group with matching endpoints already exists in Sprut with id $sprut_endpoint_group_id"
+            neutron_to_sprut_endpoint_group["$neutron_endpoint_group_id"]="$sprut_endpoint_group_id"
+        fi
+        echo ""
+    done
+}
+
+
+
+# Function to compare and create VPN services in Sprut
+compare_and_create_vpn_services() {
+    for neutron_vpn_service_id in "${!router_id_to_vpn_service_id[@]}"; do
+        vpn_service_id="${router_id_to_vpn_service_id[$neutron_vpn_service_id]}"
+
+        # Check if the VPN service already exists in Sprut
+        sprut_vpn_service_id=$(echo "$sprut_vpn_services" | jq -r --arg router_id "$neutron_vpn_service_id" '.vpnservices[] | select(.router_id == $router_id) | .id')
+
+        if [ -z "$sprut_vpn_service_id" ]; then
+            echo "Creating VPN Service for router '$neutron_vpn_service_id' in Sprut"
+
+            request_body=$(jq -n --arg router_id "${neutron_to_adv_router[$neutron_vpn_service_id]}" '{
+                vpnservice: {
+                    router_id: $router_id,
+                    admin_state_up: true
+                }
+            }')
+
+            curl_response=$(curl -s -X POST "${sprut_api_base}/vpn/vpnservices" \
+                -H "Content-Type: application/json" \
+                -H "X-Auth-Token: $token" \
+                -H "X-SDN:SPRUT" \
+                -d "$request_body")
+
+            sprut_vpn_service_id=$(echo "$curl_response" | jq -r '.vpnservice.id')
+            neutron_to_sprut_vpn_service["$vpn_service_id"]="$sprut_vpn_service_id"
+        else
+            echo "VPN Service for router '$neutron_vpn_service_id' already exists in Sprut"
+            neutron_to_sprut_vpn_service["$vpn_service_id"]="$sprut_vpn_service_id"
+        fi
+    done
+}
+
+# Execute the comparison and creation functions
+compare_and_create_ike_policies
+print_map_as_table neutron_to_sprut_ike_policy "Neutron to Sprut IKE Policies" "Neutron IKE Policy ID" "Sprut IKE Policy ID"
+
+compare_and_create_ipsec_policies
+print_map_as_table neutron_to_sprut_ipsec_policy "Neutron to Sprut IPsec Policies" "Neutron IPsec Policy ID" "Sprut IPsec Policy ID"
+
+compare_and_create_endpoint_groups
+print_map_as_table neutron_to_sprut_endpoint_group "Neutron to Sprut Endpoint Groups" "Neutron Endpoint Group ID" "Sprut Endpoint Group ID"
+
+compare_and_create_vpn_services
+print_map_as_table neutron_to_sprut_vpn_service "Neutron to Sprut VPN Services" "Neutron VPN Service ID" "Sprut VPN Service ID"
+
+
+echo "STAGE 3 complete: Missing Sprut objects created"
+echo "**********************************************************************************"
+
+# Stage 4: Creating IPsec Site Connections in Sprut
+echo "{====================STAGE 4: Creating IPsec Site Connections in Sprut====================}"
+
+create_ipsec_site_connections() {
+    for ipsec_connection_id in "${!neutron_vpn_ipsec_site_connection_ID_to_json_details[@]}"; do
+        ipsec_site_connection_json_details="${neutron_vpn_ipsec_site_connection_ID_to_json_details[$ipsec_connection_id]}"
+        ipsec_site_connection_name=$(echo "$ipsec_site_connection_json_details" | jq -r '.Name')
+
+        # Log the JSON details being processed
+        echo "Processing IPsec site connection ID: $ipsec_connection_id"
+        echo "IPsec site connection details:"
+        echo "$ipsec_site_connection_json_details"
+
+        # Retrieve corresponding Sprut IDs
+        neutron_ipsecpolicy_id=$(echo "$ipsec_site_connection_json_details" | jq -r '."IPSec Policy"')
+        sprut_ipsecpolicy_id="${neutron_to_sprut_ipsec_policy[$neutron_ipsecpolicy_id]}"
+
+        neutron_ikepolicy_id=$(echo "$ipsec_site_connection_json_details" | jq -r '."IKE Policy"')
+        sprut_ikepolicy_id="${neutron_to_sprut_ike_policy[$neutron_ikepolicy_id]}"
+
+        neutron_local_ep_group_id=$(echo "$ipsec_site_connection_json_details" | jq -r '."Local Endpoint Group ID"')
+        sprut_local_ep_group_id="${neutron_to_sprut_endpoint_group[$neutron_local_ep_group_id]}"
+
+        neutron_peer_ep_group_id=$(echo "$ipsec_site_connection_json_details" | jq -r '."Peer Endpoint Group ID"')
+        sprut_peer_ep_group_id="${neutron_to_sprut_endpoint_group[$neutron_peer_ep_group_id]}"
+
+        neutron_vpn_service_id=$(echo "$ipsec_site_connection_json_details" | jq -r '."VPN Service"')
+        sprut_vpn_service_id="${neutron_to_sprut_vpn_service["$neutron_vpn_service_id"]}"
+
+        # Prepare the request body
+        request_body=$(jq -n --arg psk "$(echo "$ipsec_site_connection_json_details" | jq -r '."Pre-shared Key"')" \
+                          --arg initiator "$(echo "$ipsec_site_connection_json_details" | jq -r '.Initiator')" \
+                          --arg ipsecpolicy_id "$sprut_ipsecpolicy_id" \
+                          --arg admin_state_up "$(echo "$ipsec_site_connection_json_details" | jq -r '.State')" \
+                          --arg mtu "$(echo "$ipsec_site_connection_json_details" | jq -r '.MTU')" \
+                          --arg peer_ep_group_id "$sprut_peer_ep_group_id" \
+                          --arg ikepolicy_id "$sprut_ikepolicy_id" \
+                          --arg vpnservice_id "$sprut_vpn_service_id" \
+                          --arg local_ep_group_id "$sprut_local_ep_group_id" \
+                          --arg peer_address "$(echo "$ipsec_site_connection_json_details" | jq -r '."Peer Address"')" \
+                          --arg peer_id "$(echo "$ipsec_site_connection_json_details" | jq -r '."Peer ID"')" \
+                          --arg name "$(echo "$ipsec_site_connection_json_details" | jq -r '.Name')" \
+                          '{
+                              ipsec_site_connection: {
+                                  psk: $psk,
+                                  initiator: $initiator,
+                                  ipsecpolicy_id: $ipsecpolicy_id,
+                                  admin_state_up: $admin_state_up,
+                                  mtu: $mtu,
+                                  peer_ep_group_id: $peer_ep_group_id,
+                                  ikepolicy_id: $ikepolicy_id,
+                                  vpnservice_id: $vpnservice_id,
+                                  local_ep_group_id: $local_ep_group_id,
+                                  peer_address: $peer_address,
+                                  peer_id: $peer_id,
+                                  name: $name
+                              }
+                          }')
+
+        echo "Creating IPsec site connection '$ipsec_site_connection_name' in Sprut"
+
+        # Log the request body
+        echo "Executing curl command with request body:"
+        echo "$request_body"
+
+        # Make the API request and log the response
+        curl_response=$(curl -s -X POST "${sprut_api_base}/vpn/ipsec-site-connections" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $token" \
+            -H "X-SDN:SPRUT" \
+            -d "$request_body")
+
+        echo "Curl response:"
+        echo "$curl_response"
+    done
+}
+
+
+
+create_ipsec_site_connections
+
+echo "STAGE 4 complete: IPsec site connections created in Sprut"
+echo "**********************************************************************************"

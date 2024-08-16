@@ -557,29 +557,32 @@ compare_and_create_endpoint_groups() {
 
         echo "Total converted UUIDs in endpoints: ${converted_endpoints[*]}"
 
-        # Update the endpoints and type in the request body
-        request_body=$(jq -n --arg name "$neutron_endpoint_group_name" --argjson endpoints "$(printf '%s\n' "${converted_endpoints[@]}" | jq -R . | jq -s .)" '{
-            endpoint_group: {
-                name: $name,
-                endpoints: $endpoints,
-                type: "cidr"
-            }
-        }')
+        # Search for a matching Sprut endpoint group based on the endpoints
+        matching_sprut_group=$(echo "$sprut_endpoint_groups" | jq -r --argjson endpoints "$(printf '%s\n' "${converted_endpoints[@]}" | jq -R . | jq -s .)" '
+            .endpoint_groups[] | select(.endpoints == $endpoints)')
 
-        # Extract Sprut endpoint group with the same name
-        sprut_endpoint_group=$(echo "$sprut_endpoint_groups" | jq -r --arg name "$neutron_endpoint_group_name" '.endpoint_groups[] | select(.name == $name)')
-        sprut_endpoint_group_id=$(echo "$sprut_endpoint_group" | jq -r '.id')
-        sprut_endpoints=$(echo "$sprut_endpoint_group" | jq -r '.endpoints[]')
+        sprut_endpoint_group_id=$(echo "$matching_sprut_group" | jq -r '.id')
 
-        echo "Comparing Neutron endpoint group '$neutron_endpoint_group_name' with endpoints: ${converted_endpoints[*]}"
         if [ -n "$sprut_endpoint_group_id" ]; then
-            echo "  -> Found corresponding Sprut endpoint group '$neutron_endpoint_group_name' with endpoints: $sprut_endpoints"
+            sprut_endpoints=$(echo "$matching_sprut_group" | jq -r '.endpoints[]')
+            echo "Comparing Neutron endpoint group '$neutron_endpoint_group_name' with endpoints: ${converted_endpoints[*]}"
+            echo "  -> Found corresponding Sprut endpoint group with endpoints: $sprut_endpoints"
         else
-            echo "  -> No corresponding Sprut endpoint group found for '$neutron_endpoint_group_name'"
+            echo "Comparing Neutron endpoint group '$neutron_endpoint_group_name' with endpoints: ${converted_endpoints[*]}"
+            echo "  -> No corresponding Sprut endpoint group found for these endpoints"
         fi
 
         if [ -z "$sprut_endpoint_group_id" ]; then
             echo "Creating Endpoint Group '$neutron_endpoint_group_name' in Sprut"
+
+            # Update the request body to use the converted endpoints
+            request_body=$(jq -n --arg name "$neutron_endpoint_group_name" --argjson endpoints "$(printf '%s\n' "${converted_endpoints[@]}" | jq -R . | jq -s .)" '{
+                endpoint_group: {
+                    name: $name,
+                    endpoints: $endpoints,
+                    type: "cidr"
+                }
+            }')
 
             # Log the request body
             echo "Request body: $request_body"
@@ -594,12 +597,13 @@ compare_and_create_endpoint_groups() {
             echo "Created Sprut Endpoint group: $sprut_endpoint_group_id"
             neutron_to_sprut_endpoint_group["$neutron_endpoint_group_id"]="$sprut_endpoint_group_id"
         else
-            echo "Endpoint Group '$neutron_endpoint_group_name' already exists in Sprut with id $sprut_endpoint_group_id"
+            echo "Endpoint Group with matching endpoints already exists in Sprut with id $sprut_endpoint_group_id"
             neutron_to_sprut_endpoint_group["$neutron_endpoint_group_id"]="$sprut_endpoint_group_id"
         fi
         echo ""
     done
 }
+
 
 
 # Function to compare and create VPN services in Sprut

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# TODO add external ip assignment to copied sprut routers
+
 echo "
 ██████╗  ██████╗ ██╗   ██╗████████╗███████╗██████╗                                                                    
 ██╔══██╗██╔═══██╗██║   ██║╚══██╔══╝██╔════╝██╔══██╗                                                                   
@@ -546,7 +548,7 @@ compare_and_create_router_to_network_interfaces() {
             fi
             
 
-            neutron_to_sprut_router_ports["$neutron_ip"]="$sprut_port_id"
+            neutron_to_sprut_router_ports["$neutron_interface_id"]="$sprut_port_id"
         done
     done
 }

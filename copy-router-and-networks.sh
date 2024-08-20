@@ -198,6 +198,7 @@ sprut_api_base="https://infra.mail.ru:9696/v2.0"
 token=$(openstack token issue -c id -f value)
 
 declare -A sprut_router_ports
+declare -A advanced_router_ports
 
 # Function to collect Sprut objects and store them in dictionaries
 collect_sprut_objects() {
@@ -211,12 +212,12 @@ collect_sprut_objects() {
     echo ""
 
     echo "Collecting Advanced routers from Sprut..."
-    sprut_advanced_routers=$(curl -s -X GET "${sprut_api_base}/direct_connect/dc_routers" \
+    advanced_routers=$(curl -s -X GET "${sprut_api_base}/direct_connect/dc_routers" \
         -H "Content-Type: application/json" \
         -H "X-Auth-Token: $token" \
         -H "X-SDN:SPRUT")
     echo "Advanced routers collected:"
-    echo "$sprut_advanced_routers" | jq .
+    echo "$advanced_routers" | jq .
     echo ""
 
     echo "Collecting Networks from Sprut..."
@@ -240,8 +241,6 @@ collect_sprut_objects() {
     # Extract router IDs
     sprut_router_ids=$(echo "$sprut_standard_routers" | jq -r '.routers[].id')
 
-    
-
     for router_id in $sprut_router_ids; do
         echo "Collecting ports for router ID: $router_id"
         
@@ -256,6 +255,26 @@ collect_sprut_objects() {
         
         echo "Ports for router ID $router_id:"
         echo "${sprut_router_ports["$router_id"]}" | jq .
+        echo ""
+    done
+
+    
+    advanced_router_ids=$(echo "$advanced_routers" | jq -r '.dc_routers[].id')
+    
+    for router_id in $advanced_router_ids; do
+        echo "Collecting ports for advanced router ID: $router_id"
+        
+        # Fetch the ports associated with this router
+        ports=$(curl -s -X GET "${sprut_api_base}/direct_connect/dc_interfaces?device_id=${router_id}" \
+            -H "Content-Type: application/json" \
+            -H "X-Auth-Token: $token" \
+            -H "X-SDN:SPRUT")
+        
+        # Store the result in the associative array
+        advanced_router_ports["$router_id"]="$ports"
+        
+        echo "Ports for advanced router ID $router_id"
+        echo "${advanced_router_ports["$router_id"]}"
         echo ""
     done
 }
@@ -287,32 +306,107 @@ print_map_as_table() {
     echo ""
 }
 
+internet_network_uuid=$(openstack network show internet -f json | jq -r .id)
+
 # Declare maps to store the correspondence between Neutron and Sprut IDs
 declare -A neutron_to_sprut_router
 
 compare_and_create_routers() {
     for neutron_router_id in "${!neutron_router_ID_to_json_details[@]}"; do
-    neutron_router=$(echo "${neutron_router_ID_to_json_details[$neutron_router_id]}" | jq -r)
-    neutron_router_name=$(echo "$neutron_router" | jq -r '.name')
+        neutron_router_transform_format="${neutron_router_to_transform_format[$neutron_router_id]}"
+        # check in which form copy should be created
+        if [ $neutron_router_transform_format != "std" ]
+        then
+            echo "neutron router $neutron_router_id with transform $neutron_router_transform_format will be created as advanced router in another loop"
+            continue
+        fi
 
-    sprut_router_name=$neutron_router_name
-    sprut_router_name+="-sprut"
+        neutron_router=$(echo "${neutron_router_ID_to_json_details[$neutron_router_id]}" | jq -r)
+        neutron_router_name=$(echo "$neutron_router" | jq -r '.name')
+        neutron_external_gateway_info=$(echo "$neutron_router" | jq '.external_gateway_info')
 
-    # basic case for std
-    # TODO: add for tranzit and advanced
-    # TODO: add check if router has external ip or no
-    sprut_router_id=$(echo "$sprut_standard_routers" | jq -r --arg name "$sprut_router_name" '.routers[] | select(.name == $name) | .id')
 
-    if [ -z "$sprut_router_id" ]; then
-            echo "Creating Router '$sprut_router_name' in Sprut"
+        sprut_router_name=$neutron_router_name
+        sprut_router_name+="-sprut"
 
-            request_body=$(jq -n --arg name "$sprut_router_name" '{
-                router: {
+        # basic case for std
+        sprut_router_id=$(echo "$sprut_standard_routers" | jq -r --arg name "$sprut_router_name" '.routers[] | select(.name == $name) | .id')
+
+        if [ -z "$sprut_router_id" ]; then
+                echo "Creating Router '$sprut_router_name' in Sprut"
+
+                if [ "$neutron_external_gateway_info" != "null" ]; then
+                    request_body=$(jq -n --arg name "$sprut_router_name" --arg network_id "$internet_network_uuid" '{
+                        router: {
+                            name: $name,
+                            external_gateway_info: {
+                                network_id: $network_id
+                            }
+                        }
+                    }')
+                else
+                    request_body=$(jq -n --arg name "$sprut_router_name" '{
+                        router: {
+                            name: $name
+                        }
+                    }')
+                fi
+
+                curl_response=$(curl -s -X POST "${sprut_api_base}/routers" \
+                    -H "Content-Type: application/json" \
+                    -H "X-Auth-Token: $token" \
+                    -H "X-SDN:SPRUT" \
+                    -d "$request_body")
+
+                echo "$curl_response" | jq .
+
+                sprut_router_id=$(echo "$curl_response" | jq -r '.router.id')
+
+                neutron_to_sprut_router["$neutron_router_id"]="$sprut_router_id"
+            else
+                echo "Router '$sprut_router_name' already exists in Sprut"
+                neutron_to_sprut_router["$neutron_router_id"]="$sprut_router_id"
+            fi
+    done
+}
+
+compare_and_create_routers
+print_map_as_table neutron_to_sprut_router "Neutron to Sprut Routers" "Neutron Router ID" "Sprut Router ID"
+
+# COMPARE AND CREATE ADVANCED ROUTERS
+
+declare -A neutron_to_advanced_router
+
+compare_and_create_advanced_routers() {
+    for neutron_router_id in "${!neutron_router_ID_to_json_details[@]}"; do
+        neutron_router_transform_format="${neutron_router_to_transform_format[$neutron_router_id]}"
+            # check in which form copy should be created
+        if [ $neutron_router_transform_format != "adv" ]
+        then
+            echo "neutron router $neutron_router_id with transform $neutron_router_transform_format was created as standard router in previous loop"
+            continue
+        fi
+
+        neutron_router=$(echo "${neutron_router_ID_to_json_details[$neutron_router_id]}" | jq -r)
+        neutron_router_name=$(echo "$neutron_router" | jq -r '.name')
+        neutron_external_gateway_info=$(echo "$neutron_router" | jq '.external_gateway_info')
+
+        advanced_router_name=$neutron_router_name
+        advanced_router_name+="-adv-sprut"
+        
+        advanced_router_id=$(echo "$advanced_routers" | jq -r --arg name "$advanced_router_name" '.dc_routers[] | select(.name == $name) | .id')
+        
+
+        if [ -z "$advanced_router_id" ]; then
+            echo "Creating advanced router '$advanced_router_name'"
+
+            request_body=$(jq -n --arg name "$advanced_router_name" '{
+                dc_router: {
                     name: $name
                 }
             }')
 
-            curl_response=$(curl -s -X POST "${sprut_api_base}/routers" \
+            curl_response=$(curl -s -X POST "${sprut_api_base}/direct_connect/dc_routers" \
                 -H "Content-Type: application/json" \
                 -H "X-Auth-Token: $token" \
                 -H "X-SDN:SPRUT" \
@@ -320,17 +414,47 @@ compare_and_create_routers() {
 
             echo "$curl_response" | jq .
 
-            sprut_router_id=$(echo "$curl_response" | jq -r '.router.id')
-            neutron_to_sprut_router["$neutron_router_id"]="$sprut_router_id"
+            advanced_router_id=$(echo "$curl_response" | jq -r '.dc_router.id')
+            neutron_to_advanced_router["$neutron_router_id"]="$advanced_router_id"
+
+            external_ip_name=$advanced_router_name
+            external_ip_name+="-ext-interface"
+
+            if [ "$neutron_external_gateway_info" != "null" ]; then
+                request_body=$(jq -n --arg name $external_ip_name \
+                                    --arg dc_router_id $advanced_router_id \
+                                    --arg network_id $internet_network_uuid \
+                    '{
+                        dc_interface : {
+                            name: $name,
+                            dc_router_id: $dc_router_id,
+                            network_id: $network_id
+                        }
+                    
+                    }')
+
+                curl_response=$(curl -s -X POST "${sprut_api_base}/direct_connect/dc_interfaces" \
+                        -H "Content-Type: application/json" \
+                        -H "X-Auth-Token: $token" \
+                        -H "X-SDN:SPRUT" \
+                        -d "$request_body")
+
+                echo "$curl_response" | jq .
+            fi
+
         else
-            echo "Router '$sprut_router_name' already exists in Sprut"
-            neutron_to_sprut_router["$neutron_router_id"]="$sprut_router_id"
+            echo "Advanced router '$advanced_router_name' already exists"
+            neutron_to_advanced_router["$neutron_router_id"]="$advanced_router_id"
         fi
+
+        
+
     done
 }
 
-compare_and_create_routers
-print_map_as_table neutron_to_sprut_router "Neutron to Sprut Routers" "Neutron Router ID" "Sprut Router ID"
+compare_and_create_advanced_routers
+print_map_as_table neutron_to_advanced_router "Neutron to Advanced Routers" "Neutron Router ID" "Advanced Router ID"
+
 
 declare -A neutron_to_sprut_network
 
@@ -455,16 +579,24 @@ compare_and_create_router_to_network_interfaces() {
     for neutron_router_id in "${!neutron_router_ID_to_json_details[@]}"; do
         neutron_router=$(echo "${neutron_router_ID_to_json_details[$neutron_router_id]}" | jq -r)
         neutron_router_name=$(echo "$neutron_router" | jq -r '.name')
+        
+        router_type="${neutron_router_to_transform_format[$neutron_router_id]}"
 
         for neutron_interface in $(echo "$neutron_router" | jq -c '.interfaces_info[]'); do
-            neutron_ip=$(echo "$neutron_interface" | jq -r '.ip_address')
 
             neutron_interface_id=$(echo "$neutron_interface" | jq -r '.port_id')
-
             neutron_port_show_cmd="openstack port show $neutron_interface_id -f json"
             echo "Running command: $neutron_port_show_cmd"
-
             neutron_port_show_cmd_details=$($neutron_port_show_cmd)
+
+            neutron_port_device_owner=$(echo "$neutron_port_show_cmd_details" | jq -r '.device_owner')
+            
+            if [ "$neutron_port_device_owner" = "network:router_centralized_snat" ]; then
+                echo "neutron port $neutron_interface_id is SNAT port. There are no SNAT ports in sprut, ignoring..."
+                continue
+            fi
+
+            neutron_ip=$(echo "$neutron_interface" | jq -r '.ip_address')
 
             neutron_port_mac_address=$(echo "$neutron_port_show_cmd_details" | jq -r '.mac_address')
 
@@ -478,77 +610,138 @@ compare_and_create_router_to_network_interfaces() {
             sprut_network_id=$(echo "$sprut_subnet" | jq -r '.network_id')
             
             # Assign the port name
-            port_name="${neutron_router_name}-${sprut_subnet_name}"
+            port_name="${neutron_router_name}-${sprut_subnet_name}-${neutron_ip}"
+
+             # check if router STANDARD
+            if [ "$router_type" = "std" ]; then
+                # Check if the port already exists in Sprut based on IP and MAC address
+                echo "Check if port $port_name already exists"
+                sprut_router_id=${neutron_to_sprut_router[$neutron_router_id]}
+                # port can exist but not be attached
+                sprut_port_id=$(echo "$neutron_and_sprut_ports_json" | jq -r --arg name $port_name --arg ip $neutron_ip '.[] | select(.Name == $name and ."Fixed IP Addresses"[].ip_address == $ip) | .ID')
             
-            # Check if the port already exists in Sprut based on IP and MAC address
-
-            echo "Check if port $port_name already exists"
-
-            sprut_router_id=${neutron_to_sprut_router[$neutron_router_id]}
-            
-            # port can exist but not be attached
-            sprut_port_id=$(echo "$neutron_and_sprut_ports_json" | jq -r --arg name $port_name --arg ip $neutron_ip '.[] | select(.Name == $name and ."Fixed IP Addresses"[].ip_address == $ip) | .ID')
-            
-            sprut_router_id="${neutron_to_sprut_router[$neutron_router_id]}"
-
-            if [ -z "$sprut_port_id" ]; then
-                echo "Creating Port '$port_name' in Sprut"
-
-                request_body=$(jq -n --arg name "$port_name" \
+                if [ -z "$sprut_port_id" ]; then
+                    echo "Creating Port '$port_name' in Sprut"
+                    request_body=$(jq -n --arg name "$port_name" \
                                     --arg ip_address "$neutron_ip" \
                                     --arg mac_address "$neutron_port_mac_address" \
                                     --arg network_id "$sprut_network_id" \
                                     --argjson fixed_ips "$(jq -n --arg subnet_id "$sprut_subnet_id" --arg ip_address "$neutron_ip" '[{subnet_id: $subnet_id, ip_address: $ip_address}]')" \
-                '{
-                    port: {
-                        name: $name,
-                        mac_address: $mac_address,
-                        fixed_ips: $fixed_ips,
-                        network_id: $network_id
-                    }
-                }')
+                    '{
+                        port: {
+                            name: $name,
+                            mac_address: $mac_address,
+                            fixed_ips: $fixed_ips,
+                            network_id: $network_id
+                        }
+                    }')
 
-                curl_response=$(curl -s -X POST "${sprut_api_base}/ports" \
-                    -H "Content-Type: application/json" \
-                    -H "X-Auth-Token: $token" \
-                    -H "X-SDN:SPRUT" \
-                    -d "$request_body")
+                    curl_response=$(curl -s -X POST "${sprut_api_base}/ports" \
+                        -H "Content-Type: application/json" \
+                        -H "X-Auth-Token: $token" \
+                        -H "X-SDN:SPRUT" \
+                        -d "$request_body")
 
-                echo "$curl_response" | jq .
+                    echo "$curl_response" 
 
-                sprut_port_id=$(echo "$curl_response" | jq -r '.port.id')
+                    sprut_port_id=$(echo "$curl_response" | jq -r '.port.id')
 
-                # attaching ports to routers
-
-                echo "Attaching created port $sprut_port_id to router $sprut_router_id"
-
-                attach_port_cmd="openstack router add port $sprut_router_id $sprut_port_id"
-                echo "Running command: $attach_port_cmd"
-                result=$($attach_port_cmd)
-
-            else
-                echo "Port '$port_name' already exists in Sprut"
-                # port exists, check that it is attached to a router
-                sprut_routers_json_details="${sprut_router_ports["$sprut_router_id"]}"
+                    # attaching ports to routers
                 
-                sprut_port_id_on_router=$(echo "$sprut_routers_json_details" | jq --arg name "$port_name" --arg mac "$neutron_port_mac_address" --arg ip "$neutron_ip" -c '
-                    .ports[] | 
-                    select(.NAME == $name and ."MAC Address" == $mac and ."Fixed IP Addresses"[].ip_address == $ip) | .ID
-                ')
+                    echo "Attaching created port $sprut_port_id to router $sprut_router_id"
+                    request_body=$(jq -n --arg sprut_port_id "$sprut_port_id" \
+                    '{
+                        port_id: $sprut_port_id
+                    }')
+                    
+                    curl_response=$(curl -s -X PUT "${sprut_api_base}/routers/${sprut_router_id}/add_router_interface" \
+                        -H "Content-Type: application/json" \
+                        -H "X-Auth-Token: $token" \
+                        -H "X-SDN:SPRUT" \
+                        -d "$request_body")
 
-                if [[ -n "$sprut_port_id_on_router" ]]; then
-                    echo "Port $sprut_port_id_on_router is attached to router $sprut_router_id"
+                    echo "$curl_response" 
+
                 else
-                    echo "Attaching existing port $sprut_port_id to router $sprut_router_id"
-                    attach_port_cmd="openstack router add port $sprut_router_id $sprut_port_id"
-                    echo "Running command: $attach_port_cmd"
-                    $attach_port_cmd
-                fi
+                    echo "Port '$port_name' already exists in Sprut"
+                    # port exists, check that it is attached to a router
+                    # check if router advanced or standard
+                    sprut_routers_json_details="${sprut_router_ports["$sprut_router_id"]}"
                 
+                    sprut_port_id_on_router=$(echo "$sprut_routers_json_details" | jq --arg name "$port_name" --arg mac "$neutron_port_mac_address" --arg ip "$neutron_ip" -c '
+                        .ports[] | 
+                        select(.NAME == $name and ."MAC Address" == $mac and ."Fixed IP Addresses"[].ip_address == $ip) | .ID
+                    ')
+
+                    if [[ -n "$sprut_port_id_on_router" ]]; then
+                        echo "Port $sprut_port_id_on_router is attached to router $sprut_router_id"
+                    else
+                        echo "Attaching existing port $sprut_port_id to router $sprut_router_id"
+                        request_body=$(jq -n --arg sprut_port_id "$sprut_port_id" \
+                        '{
+                            port_id: $sprut_port_id
+                        }')
+                    
+                        curl_response=$(curl -s -X PUT "${sprut_api_base}/routers/${sprut_router_id}/add_router_interface" \
+                            -H "Content-Type: application/json" \
+                            -H "X-Auth-Token: $token" \
+                            -H "X-SDN:SPRUT" \
+                            -d "$request_body")
+
+                        echo "$curl_response"
+                    fi
+                fi
             fi
+
+            # Check if router ADVANCED
+            if [ "$router_type" = "adv" ]; then
+                port_name+="-adv"
+
+                echo "Check if port $port_name already exists"
             
+                adv_router_id=${neutron_to_advanced_router[$neutron_router_id]}
+                adv_port_id=$(echo "$neutron_and_sprut_ports_json" | jq -r --arg name $port_name --arg ip $neutron_ip '.[] | select(.name == $name and .ip_address == $ip) | .port_id')
+
+                sprut_port_id=$adv_port_id
+                
+                if [ -z "$adv_port_id" ]; then
+                    echo "Creating Port '$port_name' in Advanced router $adv_router_id"
+
+                    request_body=$(jq -n --arg name $port_name \
+                                    --arg dc_router_id $adv_router_id \
+                                    --arg subnet_id $sprut_subnet_id \
+                                    --arg network_id $sprut_network_id \
+                                    --arg mac_address $neutron_port_mac_address \
+                                    --arg ip_address $neutron_ip \
+                    '{
+                        dc_interface : {
+                            name: $name,
+                            dc_router_id: $dc_router_id,
+                            subnet_id: $subnet_id,
+                            network_id: $network_id,
+                            ip_address: $ip_address
+                        }
+                    
+                    }')
+
+                    curl_response=$(curl -s -X POST "${sprut_api_base}/direct_connect/dc_interfaces" \
+                        -H "Content-Type: application/json" \
+                        -H "X-Auth-Token: $token" \
+                        -H "X-SDN:SPRUT" \
+                        -d "$request_body")
+
+                    echo "$curl_response" | jq .
+
+                    sprut_port_id=$(echo $curl_response | jq -r '.dc_interface.id')
+                else
+                    echo "Port with name $port_name and ip $ip already exists on advanced router $adv_router_id"
+                fi
+
+
+            fi
 
             neutron_to_sprut_router_ports["$neutron_interface_id"]="$sprut_port_id"
+            
         done
     done
 }

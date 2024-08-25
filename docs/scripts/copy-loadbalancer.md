@@ -271,6 +271,78 @@ openstack loadbalancer healthmonitor show ed80259e-6727-4845-915a-68aa9d0e576d -
 ./copy-loadbalancer.sh copy-loadbalancer-script-output-config.csv
 ```
 
+Пример успешного вывода на последней стадии
+```bash
+STAGE 3: Create missing entities in Sprut
+Copying neutron listener d0be060a-6922-4807-bdba-cc7a3a795a0c
+Creating listener for Sprut load balancer 16b06a34-801b-4648-88f4-d5e66eb6ceca
+Running API request: POST https://public.infra.mail.ru:9876/v2/lbaas/listeners
+Request body: {
+  "listener": {
+    "name": "nginx-lb-sprut_listener_HTTP_80",
+    "protocol": "HTTP",
+    "protocol_port": "80",
+    "description": "",
+    "loadbalancer_id": "16b06a34-801b-4648-88f4-d5e66eb6ceca"
+  }
+}
+Request response: {"listener": {"client_ca_tls_container_ref": null, "protocol": "HTTP", "default_tls_container_ref": null, "updated_at": null, "default_pool_id": null, "id": "bfce98e9-7804-4fc0-9ba6-a3dca2057bc9", "insert_headers": {}, "loadbalancers": [{"id": "16b06a34-801b-4648-88f4-d5e66eb6ceca"}], "sni_container_refs": [], "timeout_member_connect": 5000, "client_crl_container_ref": null, "project_id": "5f44bfcdee6045249c9c839d1052077b", "operating_status": "OFFLINE", "allowed_cidrs": null, "description": "", "provisioning_status": "PENDING_CREATE", "timeout_member_data": 50000, "protocol_port": 80, "tags": [], "timeout_tcp_inspect": 0, "name": "nginx-lb-sprut_listener_HTTP_80", "admin_state_up": true, "client_authentication": "NONE", "created_at": "2024-08-25T22:54:48", "timeout_client_data": 50000, "connection_limit": -1, "tenant_id": "5f44bfcdee6045249c9c839d1052077b", "l7policies": []}}
+Sprut listener ID: bfce98e9-7804-4fc0-9ba6-a3dca2057bc9
+Creating pool for Sprut listener bfce98e9-7804-4fc0-9ba6-a3dca2057bc9
+Running API request: POST https://public.infra.mail.ru:9876/v2/lbaas/pools
+Request body: {
+  "pool": {
+    "name": "bfce98e9-7804-4fc0-9ba6-a3dca2057bc9_pool_HTTP_LEAST_CONNECTIONS",
+    "protocol": "HTTP",
+    "lb_algorithm": "LEAST_CONNECTIONS",
+    "listener_id": "bfce98e9-7804-4fc0-9ba6-a3dca2057bc9"
+  }
+}
+Request response: {"pool": {"lb_algorithm": "LEAST_CONNECTIONS", "protocol": "HTTP", "updated_at": null, "id": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef", "loadbalancers": [{"id": "16b06a34-801b-4648-88f4-d5e66eb6ceca"}], "tags": [], "project_id": "5f44bfcdee6045249c9c839d1052077b", "operating_status": "OFFLINE", "tls_container_ref": null, "description": "", "provisioning_status": "PENDING_CREATE", "members": [], "shutdown_sessions": false, "ca_tls_container_ref": null, "name": "bfce98e9-7804-4fc0-9ba6-a3dca2057bc9_pool_HTTP_LEAST_CONNECTIONS", "admin_state_up": true, "allbackups": true, "tenant_id": "5f44bfcdee6045249c9c839d1052077b", "created_at": "2024-08-25T22:54:59", "tls_enabled": false, "session_persistence": null, "listeners": [{"id": "bfce98e9-7804-4fc0-9ba6-a3dca2057bc9"}], "crl_container_ref": null}}
+Sprut pool ID: 4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef
+Creating member for Sprut pool 4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef
+Running API request: POST https://public.infra.mail.ru:9876/v2/lbaas/pools/4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef/members
+Request body: {
+  "member": {
+    "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_member_10.0.2.5_80",
+    "address": "10.0.2.5",
+    "protocol_port": "80",
+    "subnet_id": "66a86f0f-5dce-4dd3-a2aa-3ad1eb6dbc73",
+    "weight": "10"
+  }
+}
+Request response: {"member": {"monitor_port": null, "project_id": "5f44bfcdee6045249c9c839d1052077b", "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_member_10.0.2.5_80", "weight": 10, "admin_state_up": true, "subnet_id": "66a86f0f-5dce-4dd3-a2aa-3ad1eb6dbc73", "tenant_id": "5f44bfcdee6045249c9c839d1052077b", "created_at": "2024-08-25T22:55:05", "provisioning_status": "PENDING_CREATE", "monitor_address": null, "updated_at": null, "tags": [], "address": "10.0.2.5", "protocol_port": 80, "backup": false, "id": "6baf19c4-cd63-4065-a1f9-76d8343f48fc", "operating_status": "NO_MONITOR"}}
+Sprut member ID: 6baf19c4-cd63-4065-a1f9-76d8343f48fc
+Creating member for Sprut pool 4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef
+Running API request: POST https://public.infra.mail.ru:9876/v2/lbaas/pools/4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef/members
+Request body: {
+  "member": {
+    "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_member_10.0.2.8_80",
+    "address": "10.0.2.8",
+    "protocol_port": "80",
+    "subnet_id": "66a86f0f-5dce-4dd3-a2aa-3ad1eb6dbc73",
+    "weight": "10"
+  }
+}
+Request response: {"member": {"monitor_port": null, "project_id": "5f44bfcdee6045249c9c839d1052077b", "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_member_10.0.2.8_80", "weight": 10, "admin_state_up": true, "subnet_id": "66a86f0f-5dce-4dd3-a2aa-3ad1eb6dbc73", "tenant_id": "5f44bfcdee6045249c9c839d1052077b", "created_at": "2024-08-25T22:55:11", "provisioning_status": "PENDING_CREATE", "monitor_address": null, "updated_at": null, "tags": [], "address": "10.0.2.8", "protocol_port": 80, "backup": false, "id": "ccc3c3bc-701a-4f05-8e7d-5cecd373c46f", "operating_status": "NO_MONITOR"}}
+Sprut member ID: ccc3c3bc-701a-4f05-8e7d-5cecd373c46f
+Creating health monitor for Sprut pool 4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef
+Running API request: POST https://public.infra.mail.ru:9876/v2/lbaas/healthmonitors
+Request body: {
+  "healthmonitor": {
+    "delay": "6",
+    "timeout": "3",
+    "max_retries": "4",
+    "type": "TCP",
+    "pool_id": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef",
+    "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_monitor_TCP_6"
+  }
+}
+Request response: {"healthmonitor": {"tenant_id": "5f44bfcdee6045249c9c839d1052077b", "project_id": "5f44bfcdee6045249c9c839d1052077b", "name": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef_monitor_TCP_6", "admin_state_up": true, "pools": [{"id": "4eb1541c-d5c9-4027-bb4d-6e00fb89e5ef"}], "created_at": "2024-08-25T22:55:22", "provisioning_status": "PENDING_CREATE", "updated_at": null, "domain_name": null, "delay": 6, "expected_codes": null, "max_retries": 4, "http_method": null, "timeout": 3, "http_version": null, "max_retries_down": 3, "tags": [], "url_path": null, "type": "TCP", "id": "5638c402-6d07-4dc3-9b73-aa42fc577695", "operating_status": "OFFLINE"}}
+Sprut health monitor ID: 5638c402-6d07-4dc3-9b73-aa42fc577695
+Load balancer rules copy process completed.
+```
+
 ### Шаг 5
 
 Проверяем работоспособность балансировщиков, отправляя необходимые запросы в приложения. После успешной проверки исходные балансировщики на neutron можно удалить.

@@ -1,3 +1,4 @@
 audit-create-sprut-ports.sh
 audit-replace-neutron-to-sprut.sh
 migration-inputs/
+copy-loadbalancer-script-output-config.csv

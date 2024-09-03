@@ -1,5 +1,7 @@
 # Миграция балансировщиков нагрузки
 
+**ВАЖНО!** Данный скрипт подходит только для миграции стандартных балансировщиков, которые создаёт пользователь. Сервисные балансировщики и балансировщики, создаваемые при помощи service type: loadbalancer в kubernetes рекомендуется переносить через пересоздание сущностей в сетях sprut.
+
 Балансировщик и его правила состоят из следующих сущностей:
 1. Балансировщик
 1. listener
@@ -268,7 +270,7 @@ openstack loadbalancer healthmonitor show ed80259e-6727-4845-915a-68aa9d0e576d -
 Для запуска скрипта выполняем команду:
 
 ```bash
-./copy-loadbalancer.sh copy-loadbalancer-script-output-config.csv
+./copy-loadbalancer-rules.sh copy-loadbalancer-script-output-config.csv
 ```
 
 Пример успешного вывода на последней стадии

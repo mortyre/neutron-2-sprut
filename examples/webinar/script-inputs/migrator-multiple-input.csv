@@ -1,0 +1,3 @@
+webinar-nginx-server-vm-0,webinar-loadbalancer-network-sprut,webinar-loadbalancer-subnet-sprut
+webinar-nginx-server-vm-1,webinar-loadbalancer-network-sprut,webinar-loadbalancer-subnet-sprut
+webinar-check-vpn-vm,webinar-vpn-network-sprut,webinar-vpn-subnet-sprut

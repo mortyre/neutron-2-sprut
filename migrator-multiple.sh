@@ -64,10 +64,10 @@ function capture_info_full {
     fi
     
     # Proceed with capturing port information if no migrated port is attached
-    port_output=$(openstack port list --server $sname -c id -c "MAC Address" -c "Fixed IP Addresses")
-    srcpid=$(echo "$port_output" | awk -F'|' 'NR==4{print $2}' | sed 's/ //g')
-    mcs=$(echo "$port_output" | awk -F'|' 'NR==4{print $3}' | sed 's/ //g')
-    ips=$(echo "$port_output" | awk -F'|' 'NR==4{print $4}' | grep -oP "ip_address='\K[^']+")
+    port_output=$(openstack port list --server $sname -c id -c "MAC Address" -c "Fixed IP Addresses" -f json)
+    srcpid=$(echo "$port_output" | jq -r .[0].ID)
+    mcs=$(echo "$port_output" | jq -r '.[0]."MAC Address"')
+    ips=$(echo "$port_output" | jq -r '.[0]."Fixed IP Addresses"[0].ip_address' )
     
     echo "Source Port ID is:        $srcpid"
     echo "Source Port IP Addr is:   $ips"

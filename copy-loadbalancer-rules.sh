@@ -38,6 +38,8 @@ declare -A neutron_healthmonitor_info_map
 declare -A neutron_to_sprut_network_id
 declare -A neutron_to_sprut_subnetwork_id
 
+declare -A neutron_lb_info_map
+
 # Function to print dictionary as table
 print_map_as_table() {
     local -n map=$1
@@ -81,6 +83,8 @@ for neutron_lb_name in "${!neutron_to_sprut_lb_name[@]}"; do
     # Load balancer info
     neutron_lb_info=$(openstack loadbalancer show "$neutron_lb_name" -f json)
     neutron_lb_id=$(echo "$neutron_lb_info" | jq -r '.id')
+
+    neutron_lb_info_map["$neutron_lb_id"]=$neutron_lb_info
 
     neutron_lb_vip_subnet_id=$(echo "$neutron_lb_info" | jq -r '.vip_subnet_id')
 
@@ -295,8 +299,6 @@ make_api_request() {
     echo "Request failed after $max_retries attempts."
 }
 
-
-
 # STAGE 3: Create missing entities in Sprut
 echo "STAGE 3: Create missing entities in Sprut"
 
@@ -356,6 +358,8 @@ sleep 10
 for neutron_pool_id in "${!neutron_pool_info_map[@]}"; do
     sprut_pool_id="${neutron_to_sprut_pool_id[$neutron_pool_id]}"
 
+    neutron_pool_subnet_id=""
+
     if [ -z "$sprut_pool_id" ]; then
         neutron_pool_info="${neutron_pool_info_map[$neutron_pool_id]}"
         
@@ -366,6 +370,16 @@ for neutron_pool_id in "${!neutron_pool_info_map[@]}"; do
             echo "ERROR: No Sprut listener found for Neutron listener ID $neutron_listener_id. Skipping pool creation..."
             continue
         fi
+
+
+        echo "neutron lb details: $neutron_pool_info"
+
+        neutron_lb_id=$(echo "$neutron_pool_info" | jq -r '.loadbalancers')
+    
+        neutron_lb_info="{$neutron_lb_info_map[$neutron_lb_id]}"
+
+        neutron_pool_subnet_id=$(echo "$neutron_lb_info" | jq -r '.vip_subnet_id')
+        echo "neutron pool subnet id: $neutron_pool_subnet_id"
 
         lb_algorithm=$(echo "$neutron_pool_info" | jq -r '.lb_algorithm')
         protocol=$(echo "$neutron_pool_info" | jq -r '.protocol')
@@ -408,8 +422,8 @@ for neutron_pool_id in "${!neutron_pool_info_map[@]}"; do
             neutron_member_info="${neutron_member_info_map[$neutron_member_id]}"
             address=$(echo "$neutron_member_info" | jq -r '.address')
             protocol_port=$(echo "$neutron_member_info" | jq -r '.protocol_port')
-            neutron_subnet_id=$(echo "$neutron_member_info" | jq -r '.subnet_id')
-            sprut_subnet_id="${neutron_to_sprut_subnetwork_id[$neutron_subnet_id]}"
+            #neutron_subnet_id=$(echo "$neutron_member_info" | jq -r '.subnet_id')
+            sprut_subnet_id="${neutron_to_sprut_subnetwork_id[$neutron_pool_subnet_id]}"
             weight=$(echo "$neutron_member_info" | jq -r '.weight')
 
             member_name="${sprut_pool_id}_member_${address}_${protocol_port}"
